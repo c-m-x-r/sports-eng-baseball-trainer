@@ -1,0 +1,14 @@
+[project]
+name = "sensor-visualizer"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dash",
+    "flask",
+    "gunicorn>=23.0.0",
+    "paho-mqtt>=2.1.0",
+    "plotly",
+    "redis>=7.0.1",
+]

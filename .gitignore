@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# uv
+.uv/
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Sensitive data
+credentials.json
+secrets/
+*.key
+*.pem
+*.crt
+
+# Server-specific configs (document but don't commit)
+mosquitto_passwd
+nginx_site_config
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+#ignore
+archive
