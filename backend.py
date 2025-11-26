@@ -30,6 +30,9 @@ gyro_z = deque(maxlen=MAX_DATA_POINTS)
 accel_uncal_x = deque(maxlen=MAX_DATA_POINTS)
 accel_uncal_y = deque(maxlen=MAX_DATA_POINTS)
 accel_uncal_z = deque(maxlen=MAX_DATA_POINTS)
+rotation_rate_x = deque(maxlen=MAX_DATA_POINTS)
+rotation_rate_y = deque(maxlen=MAX_DATA_POINTS)
+rotation_rate_z = deque(maxlen=MAX_DATA_POINTS)
 
 # Recording state
 recording = False
@@ -51,6 +54,7 @@ def process_sensor_data(payload):
     accel_by_time = {}
     gyro_by_time = {}
     accel_uncal_by_time = {}
+    rotation_rate_by_time = {}
 
     for d in payload:
         ts = datetime.fromtimestamp(d["time"] / 1000000000)
@@ -64,9 +68,17 @@ def process_sensor_data(payload):
             gyro_by_time[ts] = d["values"]
         elif sensor_name == "gyroscopeuncalibrated" and ts not in gyro_by_time:
             gyro_by_time[ts] = d["values"]
+        elif sensor_name == "wrist motion":
+            # Extract rotation rate from wrist motion data
+            values = d["values"]
+            rotation_rate_by_time[ts] = {
+                "x": values.get("rotationRateX", 0),
+                "y": values.get("rotationRateY", 0),
+                "z": values.get("rotationRateZ", 0)
+            }
 
     # Add synced data points
-    for ts in sorted(set(accel_by_time.keys()) | set(gyro_by_time.keys()) | set(accel_uncal_by_time.keys())):
+    for ts in sorted(set(accel_by_time.keys()) | set(gyro_by_time.keys()) | set(accel_uncal_by_time.keys()) | set(rotation_rate_by_time.keys())):
         if len(time) == 0 or ts > time[-1]:
             time.append(ts)
 
@@ -112,6 +124,20 @@ def process_sensor_data(payload):
                 accel_uncal_y.append(0)
                 accel_uncal_z.append(0)
 
+            # Add rotation rate if available, else use last value or 0
+            if ts in rotation_rate_by_time:
+                rotation_rate_x.append(rotation_rate_by_time[ts]["x"])
+                rotation_rate_y.append(rotation_rate_by_time[ts]["y"])
+                rotation_rate_z.append(rotation_rate_by_time[ts]["z"])
+            elif len(rotation_rate_x) > 0:
+                rotation_rate_x.append(rotation_rate_x[-1])
+                rotation_rate_y.append(rotation_rate_y[-1])
+                rotation_rate_z.append(rotation_rate_z[-1])
+            else:
+                rotation_rate_x.append(0)
+                rotation_rate_y.append(0)
+                rotation_rate_z.append(0)
+
             # Record data if recording is active
             global recording, current_recording
             if recording and current_recording is not None:
@@ -125,6 +151,9 @@ def process_sensor_data(payload):
                 current_recording['accel_uncal_x'].append(accel_uncal_x[-1])
                 current_recording['accel_uncal_y'].append(accel_uncal_y[-1])
                 current_recording['accel_uncal_z'].append(accel_uncal_z[-1])
+                current_recording['rotation_rate_x'].append(rotation_rate_x[-1])
+                current_recording['rotation_rate_y'].append(rotation_rate_y[-1])
+                current_recording['rotation_rate_z'].append(rotation_rate_z[-1])
 
 
 def calculate_magnitude(x_arr, y_arr, z_arr):
@@ -147,6 +176,9 @@ def analyze_recording(rec):
     accel_uncal_x = rec['accel_uncal_x']
     accel_uncal_y = rec['accel_uncal_y']
     accel_uncal_z = rec['accel_uncal_z']
+    rotation_rate_x = rec.get('rotation_rate_x', [])
+    rotation_rate_y = rec.get('rotation_rate_y', [])
+    rotation_rate_z = rec.get('rotation_rate_z', [])
     time_arr = rec['time']
 
     if len(gyro_x) == 0:
@@ -172,11 +204,35 @@ def analyze_recording(rec):
     peak_accel_uncal_mag_value = accel_uncal_mag[peak_accel_uncal_mag_idx]
     peak_accel_uncal_mag_time = time_arr[peak_accel_uncal_mag_idx]
 
-    # 4. Gyro_x value at time of peak accelerometer magnitude
+    # 4. Peak Z-axis acceleration (for foot contact timing)
+    accel_z_abs = [abs(v) for v in accel_z]
+    peak_accel_z_idx = accel_z_abs.index(max(accel_z_abs))
+    peak_accel_z_value = accel_z[peak_accel_z_idx]
+    peak_accel_z_time = time_arr[peak_accel_z_idx]
+
+    # 5. Foot contact times (offset from peak uncalibrated acceleration)
+    # Use peak_accel_uncal_mag_time as reference as specified by user
+    from datetime import timedelta
+    contact_100pct_time = peak_accel_uncal_mag_time - timedelta(milliseconds=40)
+    contact_10pct_time = peak_accel_uncal_mag_time - timedelta(milliseconds=80)
+
+    # 6. Time from foot contact to peak angular velocity (hip rotation)
+    time_from_10pct_to_peak_gyro_ms = (peak_gyro_x_time - contact_10pct_time).total_seconds() * 1000
+    time_from_100pct_to_peak_gyro_ms = (peak_gyro_x_time - contact_100pct_time).total_seconds() * 1000
+
+    # 7. Gyro_x value at time of peak accelerometer magnitude
     gyro_x_at_peak_accel = gyro_x[peak_accel_mag_idx]
 
-    # 5. Time difference between peak gyro_x and peak accel magnitude
+    # 8. Time difference between peak gyro_x and peak accel magnitude
     time_diff_ms = (peak_gyro_x_time - peak_accel_mag_time).total_seconds() * 1000
+
+    # 9. Swing timing feedback based on offset between peak accel and peak hip angular velocity
+    if time_diff_ms > 80:
+        swing_feedback = "HIPS FIRED LATE"
+    elif time_diff_ms > 30:
+        swing_feedback = "NICE SWING!"
+    else:
+        swing_feedback = "HIPS FIRED EARLY"
 
     # Store all metrics
     rec['metrics'] = {
@@ -187,15 +243,28 @@ def analyze_recording(rec):
         'peak_accel_mag_time': peak_accel_mag_time,
         'peak_accel_uncal_mag_value': peak_accel_uncal_mag_value,
         'peak_accel_uncal_mag_time': peak_accel_uncal_mag_time,
+        'peak_accel_z_value': peak_accel_z_value,
+        'peak_accel_z_time': peak_accel_z_time,
+        'contact_100pct_bw_time': contact_100pct_time,
+        'contact_10pct_time': contact_10pct_time,
+        'time_from_10pct_to_peak_gyro_ms': time_from_10pct_to_peak_gyro_ms,
+        'time_from_100pct_to_peak_gyro_ms': time_from_100pct_to_peak_gyro_ms,
         'gyro_x_at_peak_accel': gyro_x_at_peak_accel,
         'time_diff_ms': time_diff_ms,
+        'swing_feedback': swing_feedback,
         'accel_mag': accel_mag,  # Store for plotting
         'accel_uncal_mag': accel_uncal_mag  # Store for plotting
     }
 
     print(f"[ANALYSIS] Peak Gyro X: {peak_gyro_x_value:.2f} rad/s ({gyro_direction}) at {peak_gyro_x_time.strftime('%H:%M:%S.%f')[:-3]}")
     print(f"[ANALYSIS] Peak Accel Mag: {peak_accel_mag_value:.2f} m/s² at {peak_accel_mag_time.strftime('%H:%M:%S.%f')[:-3]}")
-    print(f"[ANALYSIS] Time diff: {time_diff_ms:.1f} ms, Gyro X at peak accel: {gyro_x_at_peak_accel:.2f} rad/s")
+    print(f"[ANALYSIS] Peak Accel Z: {peak_accel_z_value:.2f} m/s² at {peak_accel_z_time.strftime('%H:%M:%S.%f')[:-3]}")
+    print(f"[ANALYSIS] Foot Contact 10%: {contact_10pct_time.strftime('%H:%M:%S.%f')[:-3]}")
+    print(f"[ANALYSIS] Foot Contact 100% BW: {contact_100pct_time.strftime('%H:%M:%S.%f')[:-3]}")
+    print(f"[ANALYSIS] Time from 10% contact to peak gyro: {time_from_10pct_to_peak_gyro_ms:.1f} ms")
+    print(f"[ANALYSIS] Time from 100% contact to peak gyro: {time_from_100pct_to_peak_gyro_ms:.1f} ms")
+    print(f"[ANALYSIS] Time diff (peak gyro to peak accel): {time_diff_ms:.1f} ms")
+    print(f"[ANALYSIS] Swing Feedback: {swing_feedback}")
 
 
 def save_recording(rec):
@@ -225,6 +294,9 @@ def save_recording(rec):
                 'accel_uncal_x': rec['accel_uncal_x'],
                 'accel_uncal_y': rec['accel_uncal_y'],
                 'accel_uncal_z': rec['accel_uncal_z'],
+                'rotation_rate_x': rec.get('rotation_rate_x', []),
+                'rotation_rate_y': rec.get('rotation_rate_y', []),
+                'rotation_rate_z': rec.get('rotation_rate_z', []),
             },
             'metrics': {}
         }
@@ -239,6 +311,12 @@ def save_recording(rec):
                 metrics['peak_accel_mag_time'] = metrics['peak_accel_mag_time'].isoformat()
             if 'peak_accel_uncal_mag_time' in metrics:
                 metrics['peak_accel_uncal_mag_time'] = metrics['peak_accel_uncal_mag_time'].isoformat()
+            if 'peak_accel_z_time' in metrics:
+                metrics['peak_accel_z_time'] = metrics['peak_accel_z_time'].isoformat()
+            if 'contact_100pct_bw_time' in metrics:
+                metrics['contact_100pct_bw_time'] = metrics['contact_100pct_bw_time'].isoformat()
+            if 'contact_10pct_time' in metrics:
+                metrics['contact_10pct_time'] = metrics['contact_10pct_time'].isoformat()
             recording_data['metrics'] = metrics
 
         # Save to file

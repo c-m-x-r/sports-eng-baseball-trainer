@@ -13,6 +13,7 @@ from backend import (
     accel_x, accel_y, accel_z,
     gyro_x, gyro_y, gyro_z,
     accel_uncal_x, accel_uncal_y, accel_uncal_z,
+    rotation_rate_x, rotation_rate_y, rotation_rate_z,
     recording, recording_start_time, current_recording, recordings,
     analyze_recording,
     save_recording
@@ -46,7 +47,7 @@ app.layout = html.Div(
     children=[
         # Header
         html.Div([
-            html.H1("⚾ HITTING COACH BME 550",
+            html.H1("⚾ Swing Like Springer",
                    style={
                        'textAlign': 'left',
                        'color': WII_WHITE,
@@ -262,6 +263,8 @@ app.layout = html.Div(
                     dcc.Graph(id="gyro_graph",
                              style={'marginBottom': '20px', 'borderRadius': '15px', 'overflow': 'hidden'}),
                     dcc.Graph(id="accel_uncal_graph",
+                             style={'marginBottom': '20px', 'borderRadius': '15px', 'overflow': 'hidden'}),
+                    dcc.Graph(id="rotation_rate_graph",
                              style={'borderRadius': '15px', 'overflow': 'hidden'}),
                 ], style={'marginTop': '30px'}),
             ]
@@ -276,6 +279,7 @@ app.layout = html.Div(
     Output("accel_graph", "figure"),
     Output("gyro_graph", "figure"),
     Output("accel_uncal_graph", "figure"),
+    Output("rotation_rate_graph", "figure"),
     Input("counter", "n_intervals")
 )
 def update_graphs(_counter):
@@ -323,7 +327,7 @@ def update_graphs(_counter):
         "data": gyro_data,
         "layout": go.Layout(
             title={
-                'text': "🔄 GYROSCOPE",
+                'text': "GYROSCOPE",
                 'font': {'size': 24, 'family': 'Fredoka, Arial, sans-serif', 'color': WII_BLUE, 'weight': 700}
             },
             xaxis={"type": "date", "range": [min(time), max(time)] if len(time) > 0 else None},
@@ -366,7 +370,35 @@ def update_graphs(_counter):
         ),
     }
 
-    return accel_graph, gyro_graph, accel_uncal_graph
+    # Rotation Rate graph (from wrist motion)
+    rotation_rate_data = [
+        go.Scatter(
+            x=list(time)[:len(rotation_rate_x)], y=list(d), name=name,
+            mode='lines', line=dict(width=3, color=colors[i]), hoverinfo='skip'
+        )
+        for i, (d, name) in enumerate(zip([rotation_rate_x, rotation_rate_y, rotation_rate_z], ["X", "Y", "Z"]))
+    ]
+
+    rotation_rate_graph = {
+        "data": rotation_rate_data,
+        "layout": go.Layout(
+            title={
+                'text': "WRIST GYROSCOPE",
+                'font': {'size': 24, 'family': 'Fredoka, Arial, sans-serif', 'color': WII_BLUE, 'weight': 700}
+            },
+            xaxis={"type": "date", "range": [min(time), max(time)] if len(time) > 0 else None},
+            yaxis={"title": {"text": "rad/s", "font": {'size': 16, 'family': 'Fredoka'}}, "range": [-5, 5]},
+            margin=dict(l=60, r=30, t=60, b=40),
+            height=350,
+            showlegend=True,
+            uirevision='rotation_rate',
+            paper_bgcolor=WII_GRAY,
+            plot_bgcolor='white',
+            font={'family': 'Fredoka, Arial, sans-serif', 'size': 14}
+        ),
+    }
+
+    return accel_graph, gyro_graph, accel_uncal_graph, rotation_rate_graph
 
 
 @app.callback(
@@ -394,7 +426,8 @@ def handle_recording(start_clicks, stop_clicks):
                 'time': [],
                 'accel_x': [], 'accel_y': [], 'accel_z': [],
                 'gyro_x': [], 'gyro_y': [], 'gyro_z': [],
-                'accel_uncal_x': [], 'accel_uncal_y': [], 'accel_uncal_z': []
+                'accel_uncal_x': [], 'accel_uncal_y': [], 'accel_uncal_z': [],
+                'rotation_rate_x': [], 'rotation_rate_y': [], 'rotation_rate_z': []
             }
             print(f"[RECORDING] Started at {backend.recording_start_time}")
             return "🔴 RECORDING...", f"Recordings saved: {len(recordings)}/5"
@@ -463,6 +496,17 @@ def update_recordings_display(_):
         time_arr = rec['time']
         print(f"[DEBUG] Recording #{rec_num} has {len(time_arr)} samples, creating visualizations")
 
+        # Determine swing feedback color
+        swing_feedback = metrics.get('swing_feedback', 'N/A')
+        if swing_feedback == "NICE SWING!":
+            feedback_color = '#00C851'  # Green
+        elif swing_feedback == "HIPS FIRED LATE":
+            feedback_color = '#ff4444'  # Red
+        elif swing_feedback == "HIPS FIRED EARLY":
+            feedback_color = '#ffbb33'  # Orange
+        else:
+            feedback_color = '#666'
+
         # Format metrics text with Wii Sports styling
         metrics_text = [
             html.H3(f"🏆 RECORDING #{rec_num}",
@@ -476,18 +520,26 @@ def update_recordings_display(_):
                     style={
                         'fontSize': '18px',
                         'color': '#666',
-                        'marginBottom': '20px',
+                        'marginBottom': '10px',
                         'fontWeight': '600'
+                    }),
+            # Swing Feedback - Large and prominent
+            html.Div(swing_feedback,
+                    style={
+                        'fontSize': '24px',
+                        'color': 'white',
+                        'backgroundColor': feedback_color,
+                        'padding': '15px',
+                        'borderRadius': '15px',
+                        'textAlign': 'center',
+                        'fontWeight': '700',
+                        'marginBottom': '20px',
+                        'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'
                     }),
             html.Div([
                 html.Div([
-                    html.Span("Peak Gyro X: ", style={'fontWeight': '700', 'color': WII_BLUE, 'fontSize': '16px'}),
+                    html.Span("Peak Hip Angular Velocity: ", style={'fontWeight': '700', 'color': WII_BLUE, 'fontSize': '16px'}),
                     html.Span(f"{metrics['peak_gyro_x_value']:.2f} rad/s ({metrics['gyro_direction']})",
-                             style={'fontSize': '16px', 'color': '#333'}),
-                ], style={'marginBottom': '10px'}),
-                html.Div([
-                    html.Span("Peak Accel (cal): ", style={'fontWeight': '700', 'color': WII_BLUE, 'fontSize': '16px'}),
-                    html.Span(f"{metrics['peak_accel_mag_value']:.2f} m/s²",
                              style={'fontSize': '16px', 'color': '#333'}),
                 ], style={'marginBottom': '10px'}),
                 html.Div([
@@ -496,7 +548,17 @@ def update_recordings_display(_):
                              style={'fontSize': '16px', 'color': '#333'}),
                 ], style={'marginBottom': '10px'}),
                 html.Div([
-                    html.Span("Time diff: ", style={'fontWeight': '700', 'color': WII_BLUE, 'fontSize': '16px'}),
+                    html.Span("Time from 10% Contact to Peak: ", style={'fontWeight': '700', 'color': WII_BLUE, 'fontSize': '16px'}),
+                    html.Span(f"{metrics.get('time_from_10pct_to_peak_gyro_ms', 0):.1f} ms",
+                             style={'fontSize': '16px', 'color': '#333'}),
+                ], style={'marginBottom': '10px'}),
+                html.Div([
+                    html.Span("Time from 100% Contact to Peak: ", style={'fontWeight': '700', 'color': WII_BLUE, 'fontSize': '16px'}),
+                    html.Span(f"{metrics.get('time_from_100pct_to_peak_gyro_ms', 0):.1f} ms",
+                             style={'fontSize': '16px', 'color': '#333'}),
+                ], style={'marginBottom': '10px'}),
+                html.Div([
+                    html.Span("Peak Gyro to Peak Accel Offset: ", style={'fontWeight': '700', 'color': WII_BLUE, 'fontSize': '16px'}),
                     html.Span(f"{metrics['time_diff_ms']:.1f} ms",
                              style={'fontSize': '16px', 'color': '#333'}),
                 ], style={'marginBottom': '10px'}),
@@ -513,9 +575,76 @@ def update_recordings_display(_):
             go.Scatter(x=time_arr, y=rec['gyro_z'], name='Z', mode='lines', line=dict(width=2, color=trace_colors[2]))
         ]
 
+        # Build shapes and annotations for gyro plot
+        gyro_shapes = [{
+            'type': 'line',
+            'x0': metrics['peak_gyro_x_time'],
+            'x1': metrics['peak_gyro_x_time'],
+            'y0': 0,
+            'y1': 1,
+            'yref': 'paper',
+            'line': {'color': WII_ORANGE, 'width': 3, 'dash': 'dash'}
+        }]
+        gyro_annotations = [{
+            'x': metrics['peak_gyro_x_time'],
+            'y': 0.95,
+            'yref': 'paper',
+            'text': f"⭐ Peak",
+            'showarrow': False,
+            'bgcolor': WII_ORANGE,
+            'font': {'color': 'white', 'size': 12, 'family': 'Fredoka', 'weight': 600},
+            'borderpad': 6,
+            'borderwidth': 0
+        }]
+
+        # Add foot contact time vertical lines if available
+        if 'contact_10pct_time' in metrics:
+            gyro_shapes.append({
+                'type': 'line',
+                'x0': metrics['contact_10pct_time'],
+                'x1': metrics['contact_10pct_time'],
+                'y0': 0,
+                'y1': 1,
+                'yref': 'paper',
+                'line': {'color': '#00C851', 'width': 2, 'dash': 'dot'}
+            })
+            gyro_annotations.append({
+                'x': metrics['contact_10pct_time'],
+                'y': 0.85,
+                'yref': 'paper',
+                'text': "10%",
+                'showarrow': False,
+                'bgcolor': '#00C851',
+                'font': {'color': 'white', 'size': 10, 'family': 'Fredoka', 'weight': 600},
+                'borderpad': 4,
+                'borderwidth': 0
+            })
+
+        if 'contact_100pct_bw_time' in metrics:
+            gyro_shapes.append({
+                'type': 'line',
+                'x0': metrics['contact_100pct_bw_time'],
+                'x1': metrics['contact_100pct_bw_time'],
+                'y0': 0,
+                'y1': 1,
+                'yref': 'paper',
+                'line': {'color': '#ffbb33', 'width': 2, 'dash': 'dot'}
+            })
+            gyro_annotations.append({
+                'x': metrics['contact_100pct_bw_time'],
+                'y': 0.75,
+                'yref': 'paper',
+                'text': "100%",
+                'showarrow': False,
+                'bgcolor': '#ffbb33',
+                'font': {'color': 'white', 'size': 10, 'family': 'Fredoka', 'weight': 600},
+                'borderpad': 4,
+                'borderwidth': 0
+            })
+
         gyro_fig = go.Figure(data=gyro_traces, layout=go.Layout(
             title={
-                'text': "Gyroscope",
+                'text': "Hip Angular Velocity",
                 'font': {'size': 18, 'family': 'Fredoka, Arial, sans-serif', 'color': WII_BLUE, 'weight': 600}
             },
             xaxis={"type": "date"},
@@ -525,26 +654,8 @@ def update_recordings_display(_):
             paper_bgcolor=WII_GRAY,
             plot_bgcolor='white',
             font={'family': 'Fredoka, Arial, sans-serif', 'size': 12},
-            shapes=[{
-                'type': 'line',
-                'x0': metrics['peak_gyro_x_time'],
-                'x1': metrics['peak_gyro_x_time'],
-                'y0': 0,
-                'y1': 1,
-                'yref': 'paper',
-                'line': {'color': WII_ORANGE, 'width': 3, 'dash': 'dash'}
-            }],
-            annotations=[{
-                'x': metrics['peak_gyro_x_time'],
-                'y': 0.95,
-                'yref': 'paper',
-                'text': f"⭐ Peak",
-                'showarrow': False,
-                'bgcolor': WII_ORANGE,
-                'font': {'color': 'white', 'size': 12, 'family': 'Fredoka', 'weight': 600},
-                'borderpad': 6,
-                'borderwidth': 0
-            }]
+            shapes=gyro_shapes,
+            annotations=gyro_annotations
         ))
 
         # Create accel graph
