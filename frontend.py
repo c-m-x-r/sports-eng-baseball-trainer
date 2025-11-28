@@ -135,6 +135,7 @@ app.layout = html.Div(
                     'boxShadow': '0 5px 20px rgba(0,153,255,0.2)'
                 }),
                 dcc.Store(id='job-id-store'),
+                dcc.Store(id='level-display-store', data={}),
                 html.Div(id="recordings-display", children=[], style={'margin': '30px 0'}),
 
                 # Live Graphs Section
@@ -274,9 +275,10 @@ def check_analysis_status(n_intervals, job_id):
 
 @app.callback(
     Output("recordings-display", "children"),
-    Input("recordings-count", "children"),
+    [Input("recordings-count", "children"),
+     Input("level-display-store", "data")]
 )
-def update_recordings_display(_):
+def update_recordings_display(_, level_data_store):
     """
     Generate I-Graph visualization for all saved recordings.
     """
@@ -313,25 +315,15 @@ def update_recordings_display(_):
                 metric_item("Time from Heel Strike to Peak Wrist Speed", metrics.get('time_to_peak_wrist_speed_ms'), "ms"),
             ])
         
-        metrics_summary_div = html.Div([item for item in metrics_summary_items if item is not None],
-                                   style={'padding': '15px', 'backgroundColor': WII_GRAY, 'borderRadius': '15px', 'marginBottom': '20px', 'width': '45%'})
-
         # --- I-Graph ---
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
         time_arr = rec.get('time', [])
         
-        # Add density distributions (from pre-computed data)
-        # Assuming we want to display the 'all' level density for now.
-        # This can be made dynamic later if needed (e.g., based on the recording's level).
-        current_level = rec.get('metrics', {}).get('level', 'all') # Try to get level from recording, default to 'all'
-        
-        # Fallback to 'all' if specific level data is not available
-        if current_level not in density_data:
-            current_level = 'all'
-
+        # --- Density Distributions ---
+        current_level = level_data_store.get(str(rec_num), 'all')
         level_density_data = density_data.get(current_level, {})
-        
+
         if level_density_data:
             heel_strike_time_dt = metrics['heel_strike_time']
 
@@ -339,75 +331,50 @@ def update_recordings_display(_):
             pelvis_data = level_density_data.get('pelvis')
             if pelvis_data:
                 pelvis_time_grid = np.array(pelvis_data['time_grid'])
-                pelvis_vel_grid = np.array(pelvis_data['vel_grid'])
-                pelvis_density_matrix = np.array(pelvis_data['density'])
-
                 absolute_pelvis_time_grid = [heel_strike_time_dt + timedelta(seconds=t) for t in pelvis_time_grid]
-
                 fig.add_trace(go.Contour(
-                    x=absolute_pelvis_time_grid,
-                    y=pelvis_vel_grid,
-                    z=pelvis_density_matrix,
-                    colorscale=[[0, 'rgba(255,0,0,0)'], [1, 'rgba(255,0,0,0.4)']], # Red for Pelvis, semi-transparent
-                    showscale=False,
-                    name='Pelvis Density',
-                    contours_coloring='heatmap',
-                    opacity=0.5,
-                    hoverinfo='skip',
-                    showlegend=True
+                    x=absolute_pelvis_time_grid, y=pelvis_data['vel_grid'], z=pelvis_data['density'],
+                    colorscale=[[0, 'rgba(255,0,0,0)'], [1, 'rgba(255,0,0,0.4)']],
+                    showscale=False, name='Pelvis Density',
+                    contours_coloring='heatmap', opacity=0.6, hoverinfo='skip',
+                    line=dict(color='red')
                 ), secondary_y=False)
 
             # Wrist Density
             wrist_data = level_density_data.get('wrist')
             if wrist_data:
                 wrist_time_grid = np.array(wrist_data['time_grid'])
-                wrist_vel_grid = np.array(wrist_data['vel_grid'])
-                wrist_density_matrix = np.array(wrist_data['density'])
-
                 absolute_wrist_time_grid = [heel_strike_time_dt + timedelta(seconds=t) for t in wrist_time_grid]
-
                 fig.add_trace(go.Contour(
-                    x=absolute_wrist_time_grid,
-                    y=wrist_vel_grid,
-                    z=wrist_density_matrix,
-                    colorscale=[[0, 'rgba(0,255,0,0)'], [1, 'rgba(0,255,0,0.4)']], # Green for Wrist, semi-transparent
-                    showscale=False,
-                    name='Wrist Density',
-                    contours_coloring='heatmap',
-                    opacity=0.5,
-                    hoverinfo='skip',
-                    showlegend=True
+                    x=absolute_wrist_time_grid, y=wrist_data['vel_grid'], z=wrist_data['density'],
+                    colorscale=[[0, 'rgba(0,255,0,0)'], [1, 'rgba(0,255,0,0.4)']],
+                    showscale=False, name='Wrist Density',
+                    contours_coloring='heatmap', opacity=0.6, hoverinfo='skip',
+                    line=dict(color='green')
                 ), secondary_y=False)
 
-        # Primary axis: Angular Velocity
+        # --- Other Traces (Primary and Secondary Axes) ---
         if metrics.get('hip_angular_velocity_mag'):
             fig.add_trace(go.Scatter(x=time_arr, y=np.rad2deg(metrics['hip_angular_velocity_mag']), name='Hip Speed', mode='lines', line=dict(color=WII_BLUE, width=3)), secondary_y=False)
         if metrics.get('wrist_angular_velocity_mag'):
              fig.add_trace(go.Scatter(x=time_arr, y=np.rad2deg(metrics['wrist_angular_velocity_mag']), name='Wrist Speed', mode='lines', line=dict(color=WII_GREEN, width=2, dash='dash')), secondary_y=False)
-        
         peak_hip_time = metrics.get('peak_hip_speed_time')
         if peak_hip_time:
             fig.add_trace(go.Scatter(x=[peak_hip_time], y=[metrics['peak_hip_speed_deg_s']], name='Peak Hip Speed', mode='markers', marker=dict(symbol='star', color=WII_ORANGE, size=15, line=dict(color='white', width=2))), secondary_y=False)
-        
         peak_wrist_time = metrics.get('peak_wrist_speed_time')
         if peak_wrist_time:
             fig.add_trace(go.Scatter(x=[peak_wrist_time], y=[metrics['peak_wrist_speed_deg_s']], name='Peak Wrist Speed', mode='markers', marker=dict(symbol='diamond', color=WII_RED, size=12, line=dict(color='white', width=2))), secondary_y=False)
-
-        # Secondary axis: Acceleration (Force Proxy)
         fig.add_trace(go.Scatter(x=time_arr, y=rec.get('accel_uncal_x', []), name='Foot Accel (X)', mode='lines', opacity=0.6, line=dict(color='#FF6B6B', width=2)), secondary_y=True)
 
-        # Vertical lines for events
-        shapes = []
-        annotations = []
+        # --- Vertical Lines and Layout ---
+        shapes, annotations = [], []
         def add_event_line(ts, color, name, y_anchor=1.05):
             if ts:
                 shapes.append(dict(type='line', x0=ts, x1=ts, y0=0, y1=1, yref='paper', line=dict(color=color, width=2, dash='dot')))
                 annotations.append(dict(x=ts, y=y_anchor, yref='paper', text=name, showarrow=False, bgcolor=color, font=dict(color='white')))
-
         add_event_line(metrics.get('heel_strike_time'), WII_GREEN, 'Heel Strike')
         add_event_line(metrics.get('max_accel_x_time'), WII_ORANGE, 'Max Foot X-Accel', 1.15)
         
-        # Layout and Axis configuration
         heel_strike_time_dt = metrics['heel_strike_time']
         x_axis_bounds = [heel_strike_time_dt - timedelta(seconds=0.1), heel_strike_time_dt + timedelta(seconds=0.6)]
         y_axis_left_bounds = [0, 2500]
@@ -420,19 +387,26 @@ def update_recordings_display(_):
             height=400, margin=dict(l=60, r=60, t=60, b=50),
             paper_bgcolor=WII_GRAY, plot_bgcolor='white',
             font={'family': 'Fredoka, Arial, sans-serif', 'size': 12},
-            shapes=shapes,
-            annotations=annotations,
+            shapes=shapes, annotations=annotations,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
 
-        recording_graph_div = dcc.Graph(figure=fig, config={'displayModeBar': False}, style={'width': '55%'})
+        # --- UI Components ---
+        graph_and_button = html.Div([
+            dcc.Graph(figure=fig, config={'displayModeBar': False}),
+            html.Button(f"Showing: {current_level.upper()}", id={'type': 'level-button', 'rec_num': rec_num},
+                        style={'marginTop': '10px', 'width': '100%'})
+        ], style={'width': '55%'})
+
+        metrics_summary_div = html.Div([item for item in metrics_summary_items if item is not None],
+                                   style={'padding': '15px', 'backgroundColor': WII_GRAY, 'borderRadius': '15px', 'marginBottom': '20px', 'width': '45%'})
 
         recording_divs.append(html.Div([
             html.H3(f"🏆 RECORDING #{rec_num}", style={'marginBottom': '5px', 'color': WII_BLUE, 'fontSize': '28px', 'fontWeight': '700'}),
             html.Div(f"⏰ {rec['start_time'].strftime('%H:%M:%S')}", style={'fontSize': '18px', 'color': '#666', 'marginBottom': '10px', 'fontWeight': '600'}),
             html.Div(swing_feedback, style={'fontSize': '24px', 'color': 'white', 'backgroundColor': feedback_color, 'padding': '15px', 'borderRadius': '15px', 'textAlign': 'center', 'fontWeight': '700', 'marginBottom': '20px', 'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'}),
             html.Div([
-                recording_graph_div,
+                graph_and_button,
                 metrics_summary_div
             ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'flex-start'})
         ], style={
@@ -442,6 +416,33 @@ def update_recordings_display(_):
         }))
 
     return recording_divs
+
+@app.callback(
+    Output('level-display-store', 'data'),
+    Input({'type': 'level-button', 'rec_num': dash.ALL}, 'n_clicks'),
+    State('level-display-store', 'data'),
+    prevent_initial_call=True
+)
+def cycle_level(n_clicks, current_data):
+    if not any(n_clicks):
+        raise dash.exceptions.PreventUpdate
+
+    ctx = dash.callback_context
+    button_id = ctx.triggered_id
+    rec_num = str(button_id['rec_num'])
+
+    levels = ['all', 'milb', 'college', 'high_school', 'independent']
+    
+    current_level = current_data.get(rec_num, 'all')
+    try:
+        current_index = levels.index(current_level)
+        next_index = (current_index + 1) % len(levels)
+        next_level = levels[next_index]
+    except ValueError:
+        next_level = 'all'
+
+    current_data[rec_num] = next_level
+    return current_data
 
 @app.callback(
     Output("info-content", "style"),
