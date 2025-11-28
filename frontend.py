@@ -92,11 +92,13 @@ app.layout = html.Div(
                     """, id="info-content", style={'display': 'none', 'padding': '20px', 'backgroundColor': WII_GRAY, 'borderRadius': '15px'}),
                 ], style={'marginBottom': '30px'}),
                 html.Div([
-                    html.H2("🎮 RECORDING CONTROLS",
+                    html.H2("RECORDING CONTROLS",
                            style={
                                'color': WII_BLUE, 'fontSize': '36px', 'fontWeight': '700',
                                'marginBottom': '20px', 'textAlign': 'center'
                            }),
+                    dcc.Input(id='recording-name', type='text', placeholder='Enter Swing Name...',
+                              style={'width': 'calc(100% - 40px)', 'padding': '15px 20px', 'fontSize': '18px', 'marginBottom': '20px', 'borderRadius': '10px', 'border': '2px solid #ccc'}),
                     html.Div([
                         html.Button("START", id="start-btn", n_clicks=0,
                                    style={
@@ -140,7 +142,7 @@ app.layout = html.Div(
 
                 # Live Graphs Section
                 html.Div([
-                    html.H2("📡 LIVE SENSOR DATA", style={'textAlign': 'center', 'color': WII_BLUE, 'fontWeight': '700', 'marginBottom': '20px'}),
+                    html.H2("LIVE SENSOR DATA", style={'textAlign': 'center', 'color': WII_BLUE, 'fontWeight': '700', 'marginBottom': '20px'}),
                     html.Div([
                         dcc.Graph(id="accel_graph", style={'display': 'inline-block', 'width': '49%', 'verticalAlign': 'top'}),
                         dcc.Graph(id="gyro_graph", style={'display': 'inline-block', 'width': '49%', 'verticalAlign': 'top'})
@@ -205,9 +207,10 @@ def update_live_graphs(_counter):
     Output("analysis-interval", "disabled"),
     Input("start-btn", "n_clicks"),
     Input("stop-btn", "n_clicks"),
+    State('recording-name', 'value'),
     prevent_initial_call=True
 )
-def handle_recording(start_clicks, stop_clicks):
+def handle_recording(start_clicks, stop_clicks, recording_name):
     ctx = dash.callback_context
     if not ctx.triggered:
         return "Ready", None, True
@@ -237,6 +240,7 @@ def handle_recording(start_clicks, stop_clicks):
                 rec['end_time'] = datetime.now()
                 rec['duration'] = (rec['end_time'] - rec['start_time']).total_seconds()
                 rec['samples'] = len(rec['time'])
+                rec['name'] = recording_name
                 
                 job_id = str(uuid.uuid4())
                 thread = threading.Thread(target=backend.analyze_recording_background, args=(job_id, rec.copy()))
@@ -292,48 +296,27 @@ def update_recordings_display(_, level_data_store):
         if not metrics or not metrics.get('heel_strike_time'):
             continue
 
-        # --- Metrics Display ---
-        swing_feedback = metrics.get('swing_feedback', 'N/A')
-        feedback_color = {'GOOD SEQUENCE': '#00C851', 'HIPS A BIT LATE': '#ff4444', 'HIPS A BIT EARLY': '#ffbb33'}.get(swing_feedback, '#666')
-
-        def metric_item(label, value, unit, color=WII_BLUE):
-            if value is None: return None
-            formatted_value = f"{value:.1f}" if isinstance(value, float) else str(value)
-            return html.Div([
-                html.Span(f"{label}: ", style={'fontWeight': '700', 'color': color, 'fontSize': '16px'}),
-                html.Span(f"{formatted_value} {unit}", style={'fontSize': '16px', 'color': '#333'}),
-            ], style={'marginBottom': '10px'})
-
-        metrics_summary_items = [
-            metric_item("Peak Hip Speed", metrics.get('peak_hip_speed_deg_s'), f"deg/s ({metrics.get('hip_rotation_direction', 'N/A')})"),
-            metric_item("Time from Heel Strike to Peak Hip Speed", metrics.get('time_to_peak_hip_speed_ms'), "ms"),
-            metric_item("Time from Max Accel to Peak Hip Speed", metrics.get('time_hip_speed_to_max_accel_ms'), "ms", color=WII_ORANGE),
-        ]
-        if metrics.get('peak_wrist_speed_deg_s') is not None:
-            metrics_summary_items.extend([
-                metric_item("Peak Wrist Speed", metrics.get('peak_wrist_speed_deg_s'), "deg/s"),
-                metric_item("Time from Heel Strike to Peak Wrist Speed", metrics.get('time_to_peak_wrist_speed_ms'), "ms"),
-            ])
-        
         # --- I-Graph ---
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         
         time_arr = rec.get('time', [])
+        heel_strike_time = metrics['heel_strike_time']
         
+        # Convert time_arr to relative time in ms
+        relative_time_ms = [(t - heel_strike_time).total_seconds() * 1000 for t in time_arr]
+
         # --- Density Distributions ---
         current_level = level_data_store.get(str(rec_num), 'all')
         level_density_data = density_data.get(current_level, {})
 
         if level_density_data:
-            heel_strike_time_dt = metrics['heel_strike_time']
-
             # Pelvis Density
             pelvis_data = level_density_data.get('pelvis')
             if pelvis_data:
-                pelvis_time_grid = np.array(pelvis_data['time_grid'])
-                absolute_pelvis_time_grid = [heel_strike_time_dt + timedelta(seconds=t) for t in pelvis_time_grid]
                 fig.add_trace(go.Contour(
-                    x=absolute_pelvis_time_grid, y=pelvis_data['vel_grid'], z=pelvis_data['density'],
+                    x=np.array(pelvis_data['time_grid']) * 1000, # ms
+                    y=pelvis_data['vel_grid'], 
+                    z=pelvis_data['density'],
                     colorscale=[[0, 'rgba(255,0,0,0)'], [1, 'rgba(255,0,0,0.4)']],
                     showscale=False, name='Pelvis Density',
                     contours_coloring='heatmap', opacity=0.6, hoverinfo='skip',
@@ -343,72 +326,84 @@ def update_recordings_display(_, level_data_store):
             # Wrist Density
             wrist_data = level_density_data.get('wrist')
             if wrist_data:
-                wrist_time_grid = np.array(wrist_data['time_grid'])
-                absolute_wrist_time_grid = [heel_strike_time_dt + timedelta(seconds=t) for t in wrist_time_grid]
                 fig.add_trace(go.Contour(
-                    x=absolute_wrist_time_grid, y=wrist_data['vel_grid'], z=wrist_data['density'],
+                    x=np.array(wrist_data['time_grid']) * 1000, # ms
+                    y=wrist_data['vel_grid'], 
+                    z=wrist_data['density'],
                     colorscale=[[0, 'rgba(0,255,0,0)'], [1, 'rgba(0,255,0,0.4)']],
                     showscale=False, name='Wrist Density',
                     contours_coloring='heatmap', opacity=0.6, hoverinfo='skip',
                     line=dict(color='green')
                 ), secondary_y=False)
 
-        # --- Other Traces (Primary and Secondary Axes) ---
+        # --- Other Traces ---
         if metrics.get('hip_angular_velocity_mag'):
-            fig.add_trace(go.Scatter(x=time_arr, y=np.rad2deg(metrics['hip_angular_velocity_mag']), name='Hip Speed', mode='lines', line=dict(color=WII_BLUE, width=3)), secondary_y=False)
+            fig.add_trace(go.Scatter(x=relative_time_ms, y=np.rad2deg(metrics['hip_angular_velocity_mag']), name='Hip Speed', mode='lines', line=dict(color=WII_BLUE, width=3)), secondary_y=False)
         if metrics.get('wrist_angular_velocity_mag'):
-             fig.add_trace(go.Scatter(x=time_arr, y=np.rad2deg(metrics['wrist_angular_velocity_mag']), name='Wrist Speed', mode='lines', line=dict(color=WII_GREEN, width=2, dash='dash')), secondary_y=False)
-        peak_hip_time = metrics.get('peak_hip_speed_time')
-        if peak_hip_time:
-            fig.add_trace(go.Scatter(x=[peak_hip_time], y=[metrics['peak_hip_speed_deg_s']], name='Peak Hip Speed', mode='markers', marker=dict(symbol='star', color=WII_ORANGE, size=15, line=dict(color='white', width=2))), secondary_y=False)
-        peak_wrist_time = metrics.get('peak_wrist_speed_time')
-        if peak_wrist_time:
-            fig.add_trace(go.Scatter(x=[peak_wrist_time], y=[metrics['peak_wrist_speed_deg_s']], name='Peak Wrist Speed', mode='markers', marker=dict(symbol='diamond', color=WII_RED, size=12, line=dict(color='white', width=2))), secondary_y=False)
-        fig.add_trace(go.Scatter(x=time_arr, y=rec.get('accel_uncal_x', []), name='Foot Accel (X)', mode='lines', opacity=0.6, line=dict(color='#FF6B6B', width=2)), secondary_y=True)
-
-        # --- Vertical Lines and Layout ---
-        shapes, annotations = [], []
-        def add_event_line(ts, color, name, y_anchor=1.05):
-            if ts:
-                shapes.append(dict(type='line', x0=ts, x1=ts, y0=0, y1=1, yref='paper', line=dict(color=color, width=2, dash='dot')))
-                annotations.append(dict(x=ts, y=y_anchor, yref='paper', text=name, showarrow=False, bgcolor=color, font=dict(color='white')))
-        add_event_line(metrics.get('heel_strike_time'), WII_GREEN, 'Heel Strike')
-        add_event_line(metrics.get('max_accel_x_time'), WII_ORANGE, 'Max Foot X-Accel', 1.15)
+             fig.add_trace(go.Scatter(x=relative_time_ms, y=np.rad2deg(metrics['wrist_angular_velocity_mag']), name='Wrist Speed', mode='lines', line=dict(color=WII_GREEN, width=2, dash='dash')), secondary_y=False)
         
-        heel_strike_time_dt = metrics['heel_strike_time']
-        x_axis_bounds = [heel_strike_time_dt - timedelta(seconds=0.1), heel_strike_time_dt + timedelta(seconds=0.6)]
-        y_axis_left_bounds = [0, 2500]
+        if metrics.get('peak_hip_speed_time'):
+            peak_hip_time_rel = (metrics['peak_hip_speed_time'] - heel_strike_time).total_seconds() * 1000
+            fig.add_trace(go.Scatter(x=[peak_hip_time_rel], y=[metrics['peak_hip_speed_deg_s']], name='Peak Hip Speed', mode='markers', marker=dict(symbol='star', color=WII_ORANGE, size=15, line=dict(color='white', width=2))), secondary_y=False)
+        
+        if metrics.get('peak_wrist_speed_time'):
+            peak_wrist_time_rel = (metrics['peak_wrist_speed_time'] - heel_strike_time).total_seconds() * 1000
+            fig.add_trace(go.Scatter(x=[peak_wrist_time_rel], y=[metrics['peak_wrist_speed_deg_s']], name='Peak Wrist Speed', mode='markers', marker=dict(symbol='diamond', color=WII_RED, size=12, line=dict(color='white', width=2))), secondary_y=False)
+        
+        fig.add_trace(go.Scatter(x=relative_time_ms, y=rec.get('accel_uncal_x', []), name='Foot Accel (X)', mode='lines', opacity=0.6, line=dict(color='#FF6B6B', width=2)), secondary_y=True)
 
+        # --- Vertical Lines ---
+        shapes, annotations = [], []
+        def add_event_line_rel(ts_rel_ms, color, name, y_anchor=1.05):
+            if ts_rel_ms is not None:
+                shapes.append(dict(type='line', x0=ts_rel_ms, x1=ts_rel_ms, y0=0, y1=1, yref='paper', line=dict(color=color, width=2, dash='dot')))
+                annotations.append(dict(x=ts_rel_ms, y=y_anchor, yref='paper', text=name, showarrow=False, bgcolor=color, font=dict(color='white')))
+
+        add_event_line_rel(0, WII_GREEN, 'Heel Strike')
+        if metrics.get('max_accel_x_time'):
+            max_accel_x_time_rel = (metrics['max_accel_x_time'] - heel_strike_time).total_seconds() * 1000
+            add_event_line_rel(max_accel_x_time_rel, WII_ORANGE, 'Max Foot X-Accel', 1.15)
+        
+        # --- Layout ---
         fig.update_layout(
-            title={'text': "I-Graph Kinematics", 'font': {'size': 22, 'family': 'Fredoka, Arial, sans-serif', 'color': WII_BLUE, 'weight': 600}},
-            xaxis={"range": x_axis_bounds, "title": "Time"},
-            yaxis={"range": y_axis_left_bounds,"title": "Angular Velocity (deg/s)", "color": WII_BLUE, "side": 'left'},
+            xaxis={"range": [-100, 300], "title": "Time Relative to Heel Strike (ms)", "dtick": 100},
+            yaxis={"range": [0, 2500],"title": "Angular Velocity (deg/s)", "color": WII_BLUE, "side": 'left'},
             yaxis2={"title": "Foot Acceleration (m/s²)", "color": '#FF6B6B', "overlaying": 'y', "side": 'right'},
-            height=400, margin=dict(l=60, r=60, t=60, b=50),
-            paper_bgcolor=WII_GRAY, plot_bgcolor='white',
+            height=600, margin=dict(l=60, r=60, t=40, b=50),
+            paper_bgcolor='white', plot_bgcolor=WII_GRAY,
             font={'family': 'Fredoka, Arial, sans-serif', 'size': 12},
             shapes=shapes, annotations=annotations,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
 
         # --- UI Components ---
-        graph_and_button = html.Div([
-            dcc.Graph(figure=fig, config={'displayModeBar': False}),
-            html.Button(f"Showing: {current_level.upper()}", id={'type': 'level-button', 'rec_num': rec_num},
-                        style={'marginTop': '10px', 'width': '100%'})
-        ], style={'width': '55%'})
+        swing_name = rec.get('name') or f"Recording #{rec_num}"
+        
+        swing_feedback = metrics.get('swing_feedback', 'N/A')
+        feedback_color = {'GOOD SEQUENCE': '#00C851', 'HIPS A BIT LATE': '#ff4444', 'HIPS A BIT EARLY': '#ffbb33'}.get(swing_feedback, '#666')
 
-        metrics_summary_div = html.Div([item for item in metrics_summary_items if item is not None],
-                                   style={'padding': '15px', 'backgroundColor': WII_GRAY, 'borderRadius': '15px', 'marginBottom': '20px', 'width': '45%'})
+        def metric_item(label, value, unit, color=WII_BLUE):
+            if value is None: return None
+            formatted_value = f"{value:.1f}"
+            return html.Div([
+                html.Span(f"{label}: ", style={'fontWeight': '700', 'color': color, 'fontSize': '16px'}),
+                html.Span(f"{formatted_value} {unit}", style={'fontSize': '16px', 'color': '#333'}),
+            ], style={'display': 'inline-block', 'marginRight': '20px'})
+
+        metrics_summary_div = html.Div([
+            metric_item("Peak Hip Speed", metrics.get('peak_hip_speed_deg_s'), "deg/s"),
+            metric_item("Time to Peak Hip", metrics.get('time_to_peak_hip_speed_ms'), "ms"),
+            metric_item("Peak Wrist Speed", metrics.get('peak_wrist_speed_deg_s'), "deg/s"),
+            metric_item("Time to Peak Wrist", metrics.get('time_to_peak_wrist_speed_ms'), "ms"),
+        ], style={'textAlign': 'center', 'marginTop': '10px'})
 
         recording_divs.append(html.Div([
-            html.H3(f"🏆 RECORDING #{rec_num}", style={'marginBottom': '5px', 'color': WII_BLUE, 'fontSize': '28px', 'fontWeight': '700'}),
-            html.Div(f"⏰ {rec['start_time'].strftime('%H:%M:%S')}", style={'fontSize': '18px', 'color': '#666', 'marginBottom': '10px', 'fontWeight': '600'}),
-            html.Div(swing_feedback, style={'fontSize': '24px', 'color': 'white', 'backgroundColor': feedback_color, 'padding': '15px', 'borderRadius': '15px', 'textAlign': 'center', 'fontWeight': '700', 'marginBottom': '20px', 'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'}),
-            html.Div([
-                graph_and_button,
-                metrics_summary_div
-            ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'flex-start'})
+            html.H3(swing_name, style={'color': WII_BLUE, 'fontSize': '28px', 'fontWeight': '700', 'textAlign': 'center'}),
+            html.Div(swing_feedback, style={'fontSize': '24px', 'color': 'white', 'backgroundColor': feedback_color, 'padding': '10px', 'borderRadius': '15px', 'textAlign': 'center', 'fontWeight': '700', 'marginBottom': '15px'}),
+            dcc.Graph(figure=fig, config={'displayModeBar': False}),
+            metrics_summary_div,
+            html.Button(f"Compare: {current_level.upper()}", id={'type': 'level-button', 'rec_num': rec_num},
+                        style={'marginTop': '15px', 'width': '100%', 'padding': '10px', 'backgroundColor': WII_BLUE, 'color': 'white', 'border': 'none', 'borderRadius': '10px'})
         ], style={
             'padding': '30px', 'backgroundColor': WII_WHITE, 'borderRadius': '25px', 
             'boxShadow': '0 8px 20px rgba(0,0,0,0.15)', 'marginBottom': '25px', 
@@ -431,7 +426,7 @@ def cycle_level(n_clicks, current_data):
     button_id = ctx.triggered_id
     rec_num = str(button_id['rec_num'])
 
-    levels = ['all', 'milb', 'college', 'high_school', 'independent']
+    levels = ['all', 'milb', 'college', 'high_school']
     
     current_level = current_data.get(rec_num, 'all')
     try:

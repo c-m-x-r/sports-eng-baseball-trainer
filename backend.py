@@ -310,14 +310,19 @@ def analyze_recording(rec):
 def save_recording(rec):
     """Save recording to disk with signals and metadata"""
     try:
-        # Create filename based on start time
+        # Create filename based on start time and name
         timestamp = rec['start_time'].strftime('%Y%m%d_%H%M%S')
-        filename = f"recording_{timestamp}.json"
+        name = rec.get('name', '').strip()
+        if name:
+            filename = f"{name}_{timestamp}.json"
+        else:
+            filename = f"recording_{timestamp}.json"
         filepath = STORAGE_DIR / filename
 
         # Prepare data for JSON serialization (convert datetime objects to strings)
         recording_data = {
             'metadata': {
+                'name': name,
                 'start_time': rec['start_time'].isoformat(),
                 'end_time': rec['end_time'].isoformat() if 'end_time' in rec else None,
                 'duration': rec.get('duration', 0),
