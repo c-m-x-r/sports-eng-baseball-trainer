@@ -162,109 +162,149 @@ def calculate_magnitude(x_arr, y_arr, z_arr):
     return [math.sqrt(x_arr[i]**2 + y_arr[i]**2 + z_arr[i]**2) for i in range(len(x_arr))]
 
 
+# For asynchronous analysis
+analysis_results = {}
+
+def analyze_recording_background(job_id, rec):
+    """Wrapper to run analysis in background and store result."""
+    import uuid
+    print(f"[ANALYSIS] Starting background job {job_id}")
+    analyze_recording(rec)
+    analysis_results[job_id] = rec
+    print(f"[ANALYSIS] Finished background job {job_id}")
+
+
 def analyze_recording(rec):
-    """Compute all metrics for a saved recording"""
-    print(f"[ANALYSIS] Starting analysis for recording with {len(rec['time'])} samples")
-
-    # Extract arrays
-    gyro_x = rec['gyro_x']
-    gyro_y = rec['gyro_y']
-    gyro_z = rec['gyro_z']
-    accel_x = rec['accel_x']
-    accel_y = rec['accel_y']
-    accel_z = rec['accel_z']
-    accel_uncal_x = rec['accel_uncal_x']
-    accel_uncal_y = rec['accel_uncal_y']
-    accel_uncal_z = rec['accel_uncal_z']
-    rotation_rate_x = rec.get('rotation_rate_x', [])
-    rotation_rate_y = rec.get('rotation_rate_y', [])
-    rotation_rate_z = rec.get('rotation_rate_z', [])
-    time_arr = rec['time']
-
-    if len(gyro_x) == 0:
-        rec['metrics'] = {}
-        return
-
-    # 1. Peak gyro_x (max absolute value, preserve sign for direction)
-    gyro_x_abs = [abs(v) for v in gyro_x]
-    peak_gyro_x_idx = gyro_x_abs.index(max(gyro_x_abs))
-    peak_gyro_x_value = gyro_x[peak_gyro_x_idx]
-    peak_gyro_x_time = time_arr[peak_gyro_x_idx]
-    gyro_direction = "RIGHT" if peak_gyro_x_value > 0 else "LEFT"
-
-    # 2. Peak accelerometer magnitude (calibrated)
-    accel_mag = calculate_magnitude(accel_x, accel_y, accel_z)
-    peak_accel_mag_idx = accel_mag.index(max(accel_mag))
-    peak_accel_mag_value = accel_mag[peak_accel_mag_idx]
-    peak_accel_mag_time = time_arr[peak_accel_mag_idx]
-
-    # 3. Peak accelerometer magnitude (uncalibrated)
-    accel_uncal_mag = calculate_magnitude(accel_uncal_x, accel_uncal_y, accel_uncal_z)
-    peak_accel_uncal_mag_idx = accel_uncal_mag.index(max(accel_uncal_mag))
-    peak_accel_uncal_mag_value = accel_uncal_mag[peak_accel_uncal_mag_idx]
-    peak_accel_uncal_mag_time = time_arr[peak_accel_uncal_mag_idx]
-
-    # 4. Peak Z-axis acceleration (for foot contact timing)
-    accel_z_abs = [abs(v) for v in accel_z]
-    peak_accel_z_idx = accel_z_abs.index(max(accel_z_abs))
-    peak_accel_z_value = accel_z[peak_accel_z_idx]
-    peak_accel_z_time = time_arr[peak_accel_z_idx]
-
-    # 5. Foot contact times (offset from peak uncalibrated acceleration)
-    # Use peak_accel_uncal_mag_time as reference as specified by user
+    """
+    Compute all metrics for a saved recording.
+    This refactored version improves heel strike detection and clarifies metrics.
+    """
+    print(f"[ANALYSIS] Starting analysis for recording with {len(rec.get('time', []))} samples")
+    import numpy as np
     from datetime import timedelta
-    contact_100pct_time = peak_accel_uncal_mag_time - timedelta(milliseconds=40)
-    contact_10pct_time = peak_accel_uncal_mag_time - timedelta(milliseconds=80)
 
-    # 6. Time from foot contact to peak angular velocity (hip rotation)
-    time_from_10pct_to_peak_gyro_ms = (peak_gyro_x_time - contact_10pct_time).total_seconds() * 1000
-    time_from_100pct_to_peak_gyro_ms = (peak_gyro_x_time - contact_100pct_time).total_seconds() * 1000
-
-    # 7. Gyro_x value at time of peak accelerometer magnitude
-    gyro_x_at_peak_accel = gyro_x[peak_accel_mag_idx]
-
-    # 8. Time difference between peak gyro_x and peak accel magnitude
-    time_diff_ms = (peak_gyro_x_time - peak_accel_mag_time).total_seconds() * 1000
-
-    # 9. Swing timing feedback based on offset between peak accel and peak hip angular velocity
-    if time_diff_ms > 80:
-        swing_feedback = "HIPS FIRED LATE"
-    elif time_diff_ms > 30:
-        swing_feedback = "NICE SWING!"
-    else:
-        swing_feedback = "HIPS FIRED EARLY"
-
-    # Store all metrics
+    # Initialize metrics structure
     rec['metrics'] = {
-        'peak_gyro_x_value': peak_gyro_x_value,
-        'peak_gyro_x_time': peak_gyro_x_time,
-        'gyro_direction': gyro_direction,
-        'peak_accel_mag_value': peak_accel_mag_value,
-        'peak_accel_mag_time': peak_accel_mag_time,
-        'peak_accel_uncal_mag_value': peak_accel_uncal_mag_value,
-        'peak_accel_uncal_mag_time': peak_accel_uncal_mag_time,
-        'peak_accel_z_value': peak_accel_z_value,
-        'peak_accel_z_time': peak_accel_z_time,
-        'contact_100pct_bw_time': contact_100pct_time,
-        'contact_10pct_time': contact_10pct_time,
-        'time_from_10pct_to_peak_gyro_ms': time_from_10pct_to_peak_gyro_ms,
-        'time_from_100pct_to_peak_gyro_ms': time_from_100pct_to_peak_gyro_ms,
-        'gyro_x_at_peak_accel': gyro_x_at_peak_accel,
-        'time_diff_ms': time_diff_ms,
-        'swing_feedback': swing_feedback,
-        'accel_mag': accel_mag,  # Store for plotting
-        'accel_uncal_mag': accel_uncal_mag  # Store for plotting
+        'heel_strike_time': None,
+        'max_accel_x_time': None,
+        'peak_hip_speed_deg_s': None,
+        'peak_hip_speed_time': None,
+        'hip_rotation_direction': None,
+        'time_to_peak_hip_speed_ms': None,
+        'peak_wrist_speed_deg_s': None,
+        'peak_wrist_speed_time': None,
+        'time_to_peak_wrist_speed_ms': None,
+        'swing_feedback': "INSUFFICIENT DATA",
+        'hip_angular_velocity_mag': [],
+        'wrist_angular_velocity_mag': [],
     }
 
-    print(f"[ANALYSIS] Peak Gyro X: {peak_gyro_x_value:.2f} rad/s ({gyro_direction}) at {peak_gyro_x_time.strftime('%H:%M:%S.%f')[:-3]}")
-    print(f"[ANALYSIS] Peak Accel Mag: {peak_accel_mag_value:.2f} m/s² at {peak_accel_mag_time.strftime('%H:%M:%S.%f')[:-3]}")
-    print(f"[ANALYSIS] Peak Accel Z: {peak_accel_z_value:.2f} m/s² at {peak_accel_z_time.strftime('%H:%M:%S.%f')[:-3]}")
-    print(f"[ANALYSIS] Foot Contact 10%: {contact_10pct_time.strftime('%H:%M:%S.%f')[:-3]}")
-    print(f"[ANALYSIS] Foot Contact 100% BW: {contact_100pct_time.strftime('%H:%M:%S.%f')[:-3]}")
-    print(f"[ANALYSIS] Time from 10% contact to peak gyro: {time_from_10pct_to_peak_gyro_ms:.1f} ms")
-    print(f"[ANALYSIS] Time from 100% contact to peak gyro: {time_from_100pct_to_peak_gyro_ms:.1f} ms")
-    print(f"[ANALYSIS] Time diff (peak gyro to peak accel): {time_diff_ms:.1f} ms")
-    print(f"[ANALYSIS] Swing Feedback: {swing_feedback}")
+    # --- 1. Data Extraction and Validation ---
+    time_arr = rec.get('time', [])
+    accel_x = np.array(rec.get('accel_uncal_x', []))
+    gyro_x = np.array(rec.get('gyro_x', []))
+    gyro_y = np.array(rec.get('gyro_y', []))
+    gyro_z = np.array(rec.get('gyro_z', []))
+    rotation_rate_x = np.array(rec.get('rotation_rate_x', []))
+    rotation_rate_y = np.array(rec.get('rotation_rate_y', []))
+    rotation_rate_z = np.array(rec.get('rotation_rate_z', []))
+
+    if len(time_arr) < 2 or len(accel_x) < 2 or len(gyro_x) < 2:
+        print("[ANALYSIS] Insufficient data for analysis.")
+        return
+
+    # --- 2. Event Detection: Heel Strike and Max Acceleration ---
+    try:
+        # Find peak positive X-axis acceleration (max force of foot plant)
+        max_accel_x_idx = np.argmax(accel_x)
+        max_accel_x_time = time_arr[max_accel_x_idx]
+
+        # Find preceding minimum X-axis acceleration (the actual heel strike)
+        preceding_accel_x_segment = accel_x[:max_accel_x_idx]
+        if len(preceding_accel_x_segment) > 0:
+            heel_strike_idx = np.argmin(preceding_accel_x_segment)
+            heel_strike_time = time_arr[heel_strike_idx]
+            rec['metrics']['heel_strike_time'] = heel_strike_time
+            rec['metrics']['max_accel_x_time'] = max_accel_x_time
+            print(f"[ANALYSIS] Heel strike detected at {heel_strike_time.strftime('%H:%M:%S.%f')[:-3]}")
+        else:
+            # Fallback if peak is at the start
+            heel_strike_time = max_accel_x_time
+            rec['metrics']['heel_strike_time'] = heel_strike_time
+            rec['metrics']['max_accel_x_time'] = max_accel_x_time
+            print("[ANALYSIS] Warning: Max acceleration at start of data, using as heel strike time.")
+
+    except (ValueError, IndexError) as e:
+        print(f"[ANALYSIS] Could not determine heel strike: {e}")
+        return # Cannot proceed without heel strike time
+
+    # --- 3. Angular Velocity Analysis ---
+    # Hip rotation
+    try:
+        hip_angular_velocity_mag = np.sqrt(gyro_x**2 + gyro_y**2 + gyro_z**2)
+        peak_hip_speed_idx = np.argmax(hip_angular_velocity_mag)
+        peak_hip_speed_rad_s = hip_angular_velocity_mag[peak_hip_speed_idx]
+        peak_hip_speed_deg_s = np.rad2deg(peak_hip_speed_rad_s)
+        peak_hip_speed_time = time_arr[peak_hip_speed_idx]
+        
+        # Determine direction from gyro_x at the peak
+        hip_rotation_direction = "RIGHT" if gyro_x[peak_hip_speed_idx] > 0 else "LEFT"
+        
+        rec['metrics']['hip_angular_velocity_mag'] = hip_angular_velocity_mag.tolist()
+        rec['metrics']['peak_hip_speed_deg_s'] = peak_hip_speed_deg_s
+        rec['metrics']['peak_hip_speed_time'] = peak_hip_speed_time
+        rec['metrics']['hip_rotation_direction'] = hip_rotation_direction
+        print(f"[ANALYSIS] Peak Hip Speed: {peak_hip_speed_deg_s:.2f} deg/s")
+
+    except (ValueError, IndexError) as e:
+        print(f"[ANALYSIS] Could not determine hip speed: {e}")
+        peak_hip_speed_time = None # Ensure this is None if calculation fails
+
+    # Wrist rotation (if available)
+    if len(rotation_rate_x) > 0:
+        try:
+            wrist_angular_velocity_mag = np.sqrt(rotation_rate_x**2 + rotation_rate_y**2 + rotation_rate_z**2)
+            peak_wrist_speed_idx = np.argmax(wrist_angular_velocity_mag)
+            peak_wrist_speed_rad_s = wrist_angular_velocity_mag[peak_wrist_speed_idx]
+            peak_wrist_speed_deg_s = np.rad2deg(peak_wrist_speed_rad_s)
+            peak_wrist_speed_time = time_arr[peak_wrist_speed_idx]
+            
+            rec['metrics']['wrist_angular_velocity_mag'] = wrist_angular_velocity_mag.tolist()
+            rec['metrics']['peak_wrist_speed_deg_s'] = peak_wrist_speed_deg_s
+            rec['metrics']['peak_wrist_speed_time'] = peak_wrist_speed_time
+            print(f"[ANALYSIS] Peak Wrist Speed: {peak_wrist_speed_deg_s:.2f} deg/s")
+        except (ValueError, IndexError) as e:
+            print(f"[ANALYSIS] Could not determine wrist speed: {e}")
+            peak_wrist_speed_time = None
+    else:
+        peak_wrist_speed_time = None
+
+    # --- 4. Timing and Feedback Metrics ---
+    if heel_strike_time and peak_hip_speed_time:
+        time_to_peak_hip_speed = (peak_hip_speed_time - heel_strike_time).total_seconds() * 1000
+        rec['metrics']['time_to_peak_hip_speed_ms'] = time_to_peak_hip_speed
+        print(f"[ANALYSIS] Time from Heel Strike to Peak Hip Speed: {time_to_peak_hip_speed:.1f} ms")
+
+        # Clarified third metric: Time difference between peak hip speed and max foot acceleration
+        # This indicates how closely the peak rotation is coupled with the peak force application into the ground.
+        time_hip_to_accel_peak = (peak_hip_speed_time - max_accel_x_time).total_seconds() * 1000
+        rec['metrics']['time_hip_speed_to_max_accel_ms'] = time_hip_to_accel_peak
+        print(f"[ANALYSIS] Time from Max Accel to Peak Hip Speed: {time_hip_to_accel_peak:.1f} ms")
+        
+        # Updated Swing Feedback Logic
+        if 50 < time_to_peak_hip_speed < 150:
+             rec['metrics']['swing_feedback'] = "GOOD SEQUENCE"
+        elif time_to_peak_hip_speed <= 50:
+             rec['metrics']['swing_feedback'] = "HIPS A BIT EARLY"
+        else:
+             rec['metrics']['swing_feedback'] = "HIPS A BIT LATE"
+    
+    if heel_strike_time and peak_wrist_speed_time:
+        time_to_peak_wrist_speed = (peak_wrist_speed_time - heel_strike_time).total_seconds() * 1000
+        rec['metrics']['time_to_peak_wrist_speed_ms'] = time_to_peak_wrist_speed
+        print(f"[ANALYSIS] Time from Heel Strike to Peak Wrist Speed: {time_to_peak_wrist_speed:.1f} ms")
+
+    print(f"[ANALYSIS] Final feedback: {rec['metrics']['swing_feedback']}")
 
 
 def save_recording(rec):
@@ -301,22 +341,12 @@ def save_recording(rec):
             'metrics': {}
         }
 
-        # Add metrics if they exist (convert datetime objects)
+        # Add metrics if they exist (convert all datetime objects)
         if 'metrics' in rec and rec['metrics']:
             metrics = rec['metrics'].copy()
-            # Convert datetime objects in metrics to ISO format strings
-            if 'peak_gyro_x_time' in metrics:
-                metrics['peak_gyro_x_time'] = metrics['peak_gyro_x_time'].isoformat()
-            if 'peak_accel_mag_time' in metrics:
-                metrics['peak_accel_mag_time'] = metrics['peak_accel_mag_time'].isoformat()
-            if 'peak_accel_uncal_mag_time' in metrics:
-                metrics['peak_accel_uncal_mag_time'] = metrics['peak_accel_uncal_mag_time'].isoformat()
-            if 'peak_accel_z_time' in metrics:
-                metrics['peak_accel_z_time'] = metrics['peak_accel_z_time'].isoformat()
-            if 'contact_100pct_bw_time' in metrics:
-                metrics['contact_100pct_bw_time'] = metrics['contact_100pct_bw_time'].isoformat()
-            if 'contact_10pct_time' in metrics:
-                metrics['contact_10pct_time'] = metrics['contact_10pct_time'].isoformat()
+            for key, value in metrics.items():
+                if isinstance(value, datetime):
+                    metrics[key] = value.isoformat()
             recording_data['metrics'] = metrics
 
         # Save to file
