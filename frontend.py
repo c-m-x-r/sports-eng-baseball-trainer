@@ -131,11 +131,67 @@ app.layout = html.Div(
                 }),
                 dcc.Store(id='job-id-store'),
                 html.Div(id="recordings-display", children=[], style={'margin': '30px 0'}),
+
+                # Live Graphs Section
+                html.Div([
+                    html.H2("📡 LIVE SENSOR DATA", style={'textAlign': 'center', 'color': WII_BLUE, 'fontWeight': '700', 'marginBottom': '20px'}),
+                    html.Div([
+                        dcc.Graph(id="accel_graph", style={'display': 'inline-block', 'width': '49%', 'verticalAlign': 'top'}),
+                        dcc.Graph(id="gyro_graph", style={'display': 'inline-block', 'width': '49%', 'verticalAlign': 'top'})
+                    ]),
+                    html.Div([
+                        dcc.Graph(id="accel_uncal_graph", style={'display': 'inline-block', 'width': '49%', 'verticalAlign': 'top'}),
+                        dcc.Graph(id="rotation_rate_graph", style={'display': 'inline-block', 'width': '49%', 'verticalAlign': 'top'})
+                    ]),
+                ], style={'marginTop': '30px', 'padding': '20px', 'backgroundColor': WII_GRAY, 'borderRadius': '15px'}),
             ]
         ),
+        dcc.Interval(id='counter', interval=backend.UPDATE_FREQ_MS),
         dcc.Interval(id='analysis-interval', interval=1000, disabled=True),
     ]
 )
+
+@app.callback(
+    Output("accel_graph", "figure"),
+    Output("gyro_graph", "figure"),
+    Output("accel_uncal_graph", "figure"),
+    Output("rotation_rate_graph", "figure"),
+    Input("counter", "n_intervals")
+)
+def update_live_graphs(_counter):
+    colors = [WII_RED, WII_GREEN, WII_BLUE]
+    
+    common_layout = {
+        "xaxis": {"type": "date", "range": [min(backend.time), max(backend.time)] if len(backend.time) > 0 else None},
+        "margin": dict(l=50, r=20, t=40, b=30),
+        "height": 250,
+        "showlegend": True,
+        "paper_bgcolor": 'white',
+        "plot_bgcolor": WII_GRAY,
+        "font": {'family': 'Fredoka, Arial, sans-serif', 'size': 10}
+    }
+    
+    def create_graph(data_deques, names, title_text, y_title, y_range, uirevision):
+        data = [
+            go.Scatter(
+                x=list(backend.time)[-len(d):], y=list(d), name=name,
+                mode='lines', line=dict(width=2, color=colors[i])
+            ) for i, (d, name) in enumerate(zip(data_deques, names))
+        ]
+        layout = go.Layout(
+            **common_layout,
+            title={'text': title_text, 'font': {'size': 16, 'family': 'Fredoka, Arial, sans-serif', 'color': WII_BLUE}},
+            yaxis={"title": {"text": y_title, "font": {'size': 12}}, "range": y_range},
+            uirevision=uirevision
+        )
+        return {"data": data, "layout": layout}
+
+    accel_fig = create_graph([backend.accel_x, backend.accel_y, backend.accel_z], ["X", "Y", "Z"], "Accelerometer", "m/s²", [-50, 50], 'accel')
+    gyro_fig = create_graph([backend.gyro_x, backend.gyro_y, backend.gyro_z], ["X", "Y", "Z"], "Gyroscope", "rad/s", [-20, 20], 'gyro')
+    accel_uncal_fig = create_graph([backend.accel_uncal_x, backend.accel_uncal_y, backend.accel_uncal_z], ["X", "Y", "Z"], "Uncalibrated Accel", "m/s²", [-50, 50], 'accel_uncal')
+    rotation_rate_fig = create_graph([backend.rotation_rate_x, backend.rotation_rate_y, backend.rotation_rate_z], ["X", "Y", "Z"], "Wrist Rotation", "rad/s", [-5, 5], 'rotation_rate')
+
+    return accel_fig, gyro_fig, accel_uncal_fig, rotation_rate_fig
 
 @app.callback(
     Output("recording-status", "children"),
@@ -252,8 +308,8 @@ def update_recordings_display(_):
                 metric_item("Time from Heel Strike to Peak Wrist Speed", metrics.get('time_to_peak_wrist_speed_ms'), "ms"),
             ])
         
-        metrics_summary = html.Div([item for item in metrics_summary_items if item is not None],
-                                   style={'padding': '15px', 'backgroundColor': WII_GRAY, 'borderRadius': '15px', 'marginBottom': '20px'})
+        metrics_summary_div = html.Div([item for item in metrics_summary_items if item is not None],
+                                   style={'padding': '15px', 'backgroundColor': WII_GRAY, 'borderRadius': '15px', 'marginBottom': '20px', 'width': '45%'})
 
         # --- I-Graph ---
         fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -265,10 +321,14 @@ def update_recordings_display(_):
             fig.add_trace(go.Scatter(x=time_arr, y=np.rad2deg(metrics['hip_angular_velocity_mag']), name='Hip Speed', mode='lines', line=dict(color=WII_BLUE, width=3)), secondary_y=False)
         if metrics.get('wrist_angular_velocity_mag'):
              fig.add_trace(go.Scatter(x=time_arr, y=np.rad2deg(metrics['wrist_angular_velocity_mag']), name='Wrist Speed', mode='lines', line=dict(color=WII_GREEN, width=2, dash='dash')), secondary_y=False)
-        if metrics.get('peak_hip_speed_time'):
-            fig.add_trace(go.Scatter(x=[metrics['peak_hip_speed_time']], y=[metrics['peak_hip_speed_deg_s']], name='Peak Hip Speed', mode='markers', marker=dict(symbol='star', color=WII_ORANGE, size=15, line=dict(color='white', width=2))), secondary_y=False)
-        if metrics.get('peak_wrist_speed_time'):
-            fig.add_trace(go.Scatter(x=[metrics['peak_wrist_speed_time']], y=[metrics['peak_wrist_speed_deg_s']], name='Peak Wrist Speed', mode='markers', marker=dict(symbol='diamond', color=WII_RED, size=12, line=dict(color='white', width=2))), secondary_y=False)
+        
+        peak_hip_time = metrics.get('peak_hip_speed_time')
+        if peak_hip_time:
+            fig.add_trace(go.Scatter(x=[peak_hip_time], y=[metrics['peak_hip_speed_deg_s']], name='Peak Hip Speed', mode='markers', marker=dict(symbol='star', color=WII_ORANGE, size=15, line=dict(color='white', width=2))), secondary_y=False)
+        
+        peak_wrist_time = metrics.get('peak_wrist_speed_time')
+        if peak_wrist_time:
+            fig.add_trace(go.Scatter(x=[peak_wrist_time], y=[metrics['peak_wrist_speed_deg_s']], name='Peak Wrist Speed', mode='markers', marker=dict(symbol='diamond', color=WII_RED, size=12, line=dict(color='white', width=2))), secondary_y=False)
 
         # Secondary axis: Acceleration (Force Proxy)
         fig.add_trace(go.Scatter(x=time_arr, y=rec.get('accel_uncal_x', []), name='Foot Accel (X)', mode='lines', opacity=0.6, line=dict(color='#FF6B6B', width=2)), secondary_y=True)
@@ -285,7 +345,7 @@ def update_recordings_display(_):
         add_event_line(metrics.get('max_accel_x_time'), WII_ORANGE, 'Max Foot X-Accel', 1.15)
         
         # Layout and Axis configuration
-        heel_strike_time_dt = datetime.fromisoformat(metrics['heel_strike_time']) if isinstance(metrics['heel_strike_time'], str) else metrics['heel_strike_time']
+        heel_strike_time_dt = metrics['heel_strike_time']
         x_axis_bounds = [heel_strike_time_dt - timedelta(seconds=0.1), heel_strike_time_dt + timedelta(seconds=0.8)]
         
         fig.update_layout(
@@ -301,12 +361,16 @@ def update_recordings_display(_):
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
 
+        recording_graph_div = dcc.Graph(figure=fig, config={'displayModeBar': False}, style={'width': '55%'})
+
         recording_divs.append(html.Div([
             html.H3(f"🏆 RECORDING #{rec_num}", style={'marginBottom': '5px', 'color': WII_BLUE, 'fontSize': '28px', 'fontWeight': '700'}),
             html.Div(f"⏰ {rec['start_time'].strftime('%H:%M:%S')}", style={'fontSize': '18px', 'color': '#666', 'marginBottom': '10px', 'fontWeight': '600'}),
             html.Div(swing_feedback, style={'fontSize': '24px', 'color': 'white', 'backgroundColor': feedback_color, 'padding': '15px', 'borderRadius': '15px', 'textAlign': 'center', 'fontWeight': '700', 'marginBottom': '20px', 'boxShadow': '0 4px 6px rgba(0,0,0,0.1)'}),
-            metrics_summary,
-            dcc.Graph(figure=fig, config={'displayModeBar': False})
+            html.Div([
+                recording_graph_div,
+                metrics_summary_div
+            ], style={'display': 'flex', 'justifyContent': 'space-between', 'alignItems': 'flex-start'})
         ], style={
             'padding': '30px', 'backgroundColor': WII_WHITE, 'borderRadius': '25px', 
             'boxShadow': '0 8px 20px rgba(0,0,0,0.15)', 'marginBottom': '25px', 
