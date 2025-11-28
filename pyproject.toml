@@ -9,6 +9,8 @@ dependencies = [
     "flask",
     "gunicorn>=23.0.0",
     "paho-mqtt>=2.1.0",
+    "pandas>=2.3.3",
     "plotly",
     "redis>=7.0.1",
+    "scipy>=1.16.3",
 ]

@@ -9,6 +9,11 @@ import threading
 import numpy as np
 
 import backend
+import json
+
+# Load density data
+with open('computed_density_data.json', 'r') as f:
+    density_data = json.load(f)
 
 # Create Dash app
 app = dash.Dash(
@@ -316,6 +321,64 @@ def update_recordings_display(_):
         
         time_arr = rec.get('time', [])
         
+        # Add density distributions (from pre-computed data)
+        # Assuming we want to display the 'all' level density for now.
+        # This can be made dynamic later if needed (e.g., based on the recording's level).
+        current_level = rec.get('metrics', {}).get('level', 'all') # Try to get level from recording, default to 'all'
+        
+        # Fallback to 'all' if specific level data is not available
+        if current_level not in density_data:
+            current_level = 'all'
+
+        level_density_data = density_data.get(current_level, {})
+        
+        if level_density_data:
+            heel_strike_time_dt = metrics['heel_strike_time']
+
+            # Pelvis Density
+            pelvis_data = level_density_data.get('pelvis')
+            if pelvis_data:
+                pelvis_time_grid = np.array(pelvis_data['time_grid'])
+                pelvis_vel_grid = np.array(pelvis_data['vel_grid'])
+                pelvis_density_matrix = np.array(pelvis_data['density'])
+
+                absolute_pelvis_time_grid = [heel_strike_time_dt + timedelta(seconds=t) for t in pelvis_time_grid]
+
+                fig.add_trace(go.Contour(
+                    x=absolute_pelvis_time_grid,
+                    y=pelvis_vel_grid,
+                    z=pelvis_density_matrix,
+                    colorscale=[[0, 'rgba(255,0,0,0)'], [1, 'rgba(255,0,0,0.4)']], # Red for Pelvis, semi-transparent
+                    showscale=False,
+                    name='Pelvis Density',
+                    contours_coloring='heatmap',
+                    opacity=0.5,
+                    hoverinfo='skip',
+                    showlegend=True
+                ), secondary_y=False)
+
+            # Wrist Density
+            wrist_data = level_density_data.get('wrist')
+            if wrist_data:
+                wrist_time_grid = np.array(wrist_data['time_grid'])
+                wrist_vel_grid = np.array(wrist_data['vel_grid'])
+                wrist_density_matrix = np.array(wrist_data['density'])
+
+                absolute_wrist_time_grid = [heel_strike_time_dt + timedelta(seconds=t) for t in wrist_time_grid]
+
+                fig.add_trace(go.Contour(
+                    x=absolute_wrist_time_grid,
+                    y=wrist_vel_grid,
+                    z=wrist_density_matrix,
+                    colorscale=[[0, 'rgba(0,255,0,0)'], [1, 'rgba(0,255,0,0.4)']], # Green for Wrist, semi-transparent
+                    showscale=False,
+                    name='Wrist Density',
+                    contours_coloring='heatmap',
+                    opacity=0.5,
+                    hoverinfo='skip',
+                    showlegend=True
+                ), secondary_y=False)
+
         # Primary axis: Angular Velocity
         if metrics.get('hip_angular_velocity_mag'):
             fig.add_trace(go.Scatter(x=time_arr, y=np.rad2deg(metrics['hip_angular_velocity_mag']), name='Hip Speed', mode='lines', line=dict(color=WII_BLUE, width=3)), secondary_y=False)
@@ -346,12 +409,13 @@ def update_recordings_display(_):
         
         # Layout and Axis configuration
         heel_strike_time_dt = metrics['heel_strike_time']
-        x_axis_bounds = [heel_strike_time_dt - timedelta(seconds=0.1), heel_strike_time_dt + timedelta(seconds=0.8)]
-        
+        x_axis_bounds = [heel_strike_time_dt - timedelta(seconds=0.1), heel_strike_time_dt + timedelta(seconds=0.6)]
+        y_axis_left_bounds = [0, 2500]
+
         fig.update_layout(
             title={'text': "I-Graph Kinematics", 'font': {'size': 22, 'family': 'Fredoka, Arial, sans-serif', 'color': WII_BLUE, 'weight': 600}},
             xaxis={"range": x_axis_bounds, "title": "Time"},
-            yaxis={"title": "Angular Velocity (deg/s)", "color": WII_BLUE, "side": 'left'},
+            yaxis={"range": y_axis_left_bounds,"title": "Angular Velocity (deg/s)", "color": WII_BLUE, "side": 'left'},
             yaxis2={"title": "Foot Acceleration (m/s²)", "color": '#FF6B6B', "overlaying": 'y', "side": 'right'},
             height=400, margin=dict(l=60, r=60, t=60, b=50),
             paper_bgcolor=WII_GRAY, plot_bgcolor='white',
